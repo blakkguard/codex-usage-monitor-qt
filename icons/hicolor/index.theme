@@ -1,0 +1,12 @@
+[Icon Theme]
+Name=hicolor
+Comment=Local icon theme for Codex Usage Widget
+Directories=scalable/apps
+
+[scalable/apps]
+Size=256
+Type=Scalable
+Context=Applications
+MinSize=16
+MaxSize=512
+Threshold=2

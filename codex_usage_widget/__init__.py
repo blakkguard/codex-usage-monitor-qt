@@ -1,0 +1,2 @@
+"""Compact Codex usage widget."""
+
