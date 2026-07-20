@@ -3,14 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import sqlite3
 
+
+log = logging.getLogger(__name__)
 
 CODEX_HOME = Path.home() / ".codex"
 LOG_DB = CODEX_HOME / "logs_2.sqlite"
 STATE_DB = CODEX_HOME / "state_5.sqlite"
 SESSIONS_DIR = CODEX_HOME / "sessions"
+FIVE_HOUR_MINUTES = 5 * 60
+WEEKLY_MINUTES = 7 * 24 * 60
 
 
 @dataclass(frozen=True)
@@ -20,10 +25,11 @@ class LimitWindow:
     window_minutes: int | None
     reset_at: datetime | None
     reset_after_seconds: int | None
+    stale_reason: str | None = None
 
     @property
     def has_data(self) -> bool:
-        return self.used_percent is not None and self.reset_at is not None
+        return self.stale_reason is None and self.used_percent is not None and self.reset_at is not None
 
 
 @dataclass(frozen=True)
@@ -76,9 +82,11 @@ def _from_epoch(value: object) -> datetime | None:
         return None
 
 
-def _extract_rate_limits(data: object) -> RateLimitSnapshot | None:
+def _extract_rate_limits(data: object, now: datetime | None = None) -> RateLimitSnapshot | None:
     if not isinstance(data, dict):
         return None
+    if now is None:
+        now = datetime.now().astimezone()
 
     source = data
     payload = data.get("payload")
@@ -89,13 +97,23 @@ def _extract_rate_limits(data: object) -> RateLimitSnapshot | None:
     if not isinstance(rate_limits, dict):
         return None
 
+    windows = [_limit_window("raw", rate_limits.get("primary")), _limit_window("raw", rate_limits.get("secondary"))]
+    primary = _select_window("5h", FIVE_HOUR_MINUTES, windows, now)
+    secondary = _select_window("weekly", WEEKLY_MINUTES, windows, now)
+    log.debug(
+        "parsed rate limits updated_at=%s primary=%s secondary=%s raw=%s",
+        _from_epoch(data.get("ts") or data.get("timestamp") or source.get("ts") or source.get("timestamp")),
+        primary,
+        secondary,
+        windows,
+    )
     return RateLimitSnapshot(
         updated_at=_from_epoch(data.get("ts") or data.get("timestamp") or source.get("ts") or source.get("timestamp")),
         plan_type=source.get("plan_type") or rate_limits.get("plan_type") or data.get("plan_type"),
         allowed=rate_limits.get("allowed"),
         limit_reached=rate_limits.get("limit_reached"),
-        primary=_limit_window("5h", rate_limits.get("primary")),
-        secondary=_limit_window("weekly", rate_limits.get("secondary")),
+        primary=primary,
+        secondary=secondary,
         log_id=None,
     )
 
@@ -123,7 +141,7 @@ def _extract_event(body: str) -> dict | None:
 
 def _limit_window(name: str, data: object) -> LimitWindow:
     if not isinstance(data, dict):
-        return LimitWindow(name, None, None, None, None)
+        return LimitWindow(name, None, None, None, None, "missing")
 
     used = data.get("used_percent")
     window = data.get("window_minutes")
@@ -148,6 +166,40 @@ def _limit_window(name: str, data: object) -> LimitWindow:
         reset_at=_from_epoch(data.get("reset_at") or data.get("resets_at")),
         reset_after_seconds=reset_after,
     )
+
+
+def _select_window(name: str, expected_minutes: int, windows: list[LimitWindow], now: datetime) -> LimitWindow:
+    for window in windows:
+        if window.window_minutes != expected_minutes:
+            continue
+        if window.used_percent is None or window.reset_at is None:
+            log.debug(
+                "%s rate limit stale: incomplete data used=%s reset_at=%s window_minutes=%s",
+                name,
+                window.used_percent,
+                window.reset_at,
+                window.window_minutes,
+            )
+            return LimitWindow(name, None, expected_minutes, None, window.reset_after_seconds, "incomplete")
+        if window.reset_at <= now:
+            log.debug(
+                "%s rate limit stale: reset_at=%s now=%s used=%s",
+                name,
+                window.reset_at,
+                now,
+                window.used_percent,
+            )
+            return LimitWindow(name, None, expected_minutes, None, window.reset_after_seconds, "expired")
+        log.debug(
+            "%s rate limit current: used=%s reset_at=%s reset_after_seconds=%s",
+            name,
+            window.used_percent,
+            window.reset_at,
+            window.reset_after_seconds,
+        )
+        return LimitWindow(name, window.used_percent, expected_minutes, window.reset_at, window.reset_after_seconds)
+    log.debug("%s rate limit stale: no %s-minute window in latest event", name, expected_minutes)
+    return LimitWindow(name, None, expected_minutes, None, None, "missing")
 
 
 def _load_rate_limits_from_sessions(sessions_dir: Path = SESSIONS_DIR) -> RateLimitSnapshot:
@@ -217,7 +269,8 @@ def load_rate_limits(log_db: Path = LOG_DB) -> RateLimitSnapshot:
             """
             select id, ts, feedback_log_body
             from logs
-            where feedback_log_body like '%codex.rate_limits%'
+            where feedback_log_body like '%websocket event: {"type":"codex.rate_limits"%'
+               or feedback_log_body like '%sse event: {"type":"codex.rate_limits"%'
             order by id desc
             limit 200
             """

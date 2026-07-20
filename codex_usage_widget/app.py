@@ -98,6 +98,8 @@ def _ago(dt: datetime | None, now: datetime) -> str:
 
 def _reset_text(window: LimitWindow, now: datetime) -> tuple[str, str]:
     if not window.has_data:
+        if window.stale_reason == "expired":
+            return "waiting", "stale local data"
         return "waiting", "no local data"
     assert window.reset_at is not None
     used = f"{window.used_percent}%"
