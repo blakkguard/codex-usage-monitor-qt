@@ -400,25 +400,18 @@ class UsageWidget(QWidget):
         self.arrow.clicked.connect(self.toggle_details)
 
         self.model_label = QLabel()
-        self.five_used = QLabel()
-        self.five_reset = QLabel()
         self.week_used = QLabel()
         self.week_reset = QLabel()
         self.updated_label = QLabel()
         self.detail_label = QLabel()
         self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.detail_label.setVisible(False)
-        five_font = self.five_used.font()
-        five_font.setBold(True)
-        self.five_used.setFont(five_font)
         week_font = self.week_used.font()
         week_font.setBold(True)
         self.week_used.setFont(week_font)
-        self.five_title = self._section_title("5h")
         self.week_title = self._section_title("Week")
 
         self.model_separator = self._separator()
-        self.limit_separator = self._separator()
         self.updated_separator = self._separator()
         self.content_layout = QGridLayout()
         self.content_layout.setContentsMargins(0, 0, 0, 0)
@@ -480,26 +473,19 @@ class UsageWidget(QWidget):
         self.content_layout.addWidget(self.arrow, 0, 0, 2, 1)
         self.content_layout.addWidget(self.model_label, 0, 1)
         self.content_layout.addWidget(self.model_separator, 0, 2, 2, 1)
-        self.content_layout.addWidget(self.five_title, 0, 3)
-        self.content_layout.addWidget(self.five_used, 0, 4)
-        self.content_layout.addWidget(self.five_reset, 1, 4)
-        self.content_layout.addWidget(self.limit_separator, 0, 5, 2, 1)
-        self.content_layout.addWidget(self.week_title, 0, 6)
-        self.content_layout.addWidget(self.week_used, 0, 7)
-        self.content_layout.addWidget(self.week_reset, 1, 7)
-        self.content_layout.addWidget(self.updated_separator, 0, 8, 2, 1)
-        self.content_layout.addWidget(self.updated_label, 0, 9)
+        self.content_layout.addWidget(self.week_title, 0, 3)
+        self.content_layout.addWidget(self.week_used, 0, 4)
+        self.content_layout.addWidget(self.week_reset, 1, 4)
+        self.content_layout.addWidget(self.updated_separator, 0, 5, 2, 1)
+        self.content_layout.addWidget(self.updated_label, 0, 6)
 
     def _layout_stacked(self) -> None:
-        self.content_layout.addWidget(self.arrow, 0, 0, 3, 1)
+        self.content_layout.addWidget(self.arrow, 0, 0, 2, 1)
         self.content_layout.addWidget(self.model_label, 0, 1, 1, 2)
         self.content_layout.addWidget(self.updated_label, 0, 3)
-        self.content_layout.addWidget(self.five_title, 1, 1)
-        self.content_layout.addWidget(self.five_used, 1, 2)
-        self.content_layout.addWidget(self.five_reset, 1, 3)
-        self.content_layout.addWidget(self.week_title, 2, 1)
-        self.content_layout.addWidget(self.week_used, 2, 2)
-        self.content_layout.addWidget(self.week_reset, 2, 3)
+        self.content_layout.addWidget(self.week_title, 1, 1)
+        self.content_layout.addWidget(self.week_used, 1, 2)
+        self.content_layout.addWidget(self.week_reset, 1, 3)
 
     def toggle_details(self) -> None:
         visible = not self.detail_label.isVisible()
@@ -656,21 +642,19 @@ class UsageWidget(QWidget):
         self.model_label.setText(model)
         self.model_label.setVisible(self.show_model)
 
-        self._update_limit_labels(limits.primary, self.five_used, self.five_reset, now)
-        self._update_limit_labels(limits.secondary, self.week_used, self.week_reset, now)
+        self._update_limit_labels(limits.weekly, self.week_used, self.week_reset, now)
 
         self.updated_label.setText(f"Updated {_ago(limits.updated_at, now)}")
         self.updated_label.setVisible(self.show_updated)
         self._update_separator_visibility()
-        reset_at_5h = limits.primary.reset_at.strftime("%b %-d %-I:%M %p") if limits.primary.reset_at else "none"
-        reset_at_week = limits.secondary.reset_at.strftime("%b %-d %-I:%M %p") if limits.secondary.reset_at else "none"
+        reset_at_week = limits.weekly.reset_at.strftime("%b %-d %-I:%M %p") if limits.weekly.reset_at else "none"
         thread_updated = thread.updated_at.strftime("%b %-d %-I:%M %p") if thread.updated_at else "none"
         tokens = f"{thread.tokens_used:,}" if thread.tokens_used is not None else "unknown"
         self.detail_label.setText(
             "\n".join(
                 [
                     f"Plan: {limits.plan_type or 'unknown'} | Allowed: {limits.allowed if limits.allowed is not None else 'n/a'}",
-                    f"5h reset: {reset_at_5h} | Weekly reset: {reset_at_week}",
+                    f"Weekly reset: {reset_at_week}",
                     f"Thread updated: {thread_updated} | Tokens: {tokens}",
                     f"CWD: {thread.cwd or 'unknown'}",
                     f"Log id: {limits.log_id or 'none'} | Read: {self.snapshot.read_at.strftime('%-I:%M:%S %p')}",
@@ -697,7 +681,6 @@ class UsageWidget(QWidget):
     def _update_separator_visibility(self) -> None:
         horizontal = self.widget_layout_mode == "horizontal"
         self.model_separator.setVisible(horizontal and self.model_label.isVisible())
-        self.limit_separator.setVisible(horizontal)
         self.updated_separator.setVisible(horizontal and self.updated_label.isVisible())
 
     def _update_limit_labels(self, window: LimitWindow, usage: QLabel, reset: QLabel, now: datetime) -> None:
@@ -1057,13 +1040,11 @@ class UsageTray:
     def _tooltip(self) -> str:
         now = datetime.now().astimezone()
         snapshot = self.widget.snapshot
-        five_used, five_reset = _reset_text(snapshot.rate_limits.primary, now)
-        week_used, week_reset = _reset_text(snapshot.rate_limits.secondary, now)
+        week_used, week_reset = _reset_text(snapshot.rate_limits.weekly, now)
         model = snapshot.thread.model or "unknown model"
         return "\n".join(
             [
                 f"Model: {model}",
-                f"5h: {five_used}, reset {five_reset}",
                 f"Week: {week_used}, reset {week_reset}",
                 f"Updated: {_ago(snapshot.rate_limits.updated_at, now)}",
             ]
